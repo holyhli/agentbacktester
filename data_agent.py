@@ -33,7 +33,6 @@ data_agent = Agent(
     name="DataAgent",
     port=8001,
     seed="data_agent_secret_phrase",
-    mailbox=True,
     endpoint=["http://127.0.0.1:8001/submit"],
 )
 

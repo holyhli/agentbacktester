@@ -42,12 +42,11 @@ backtest_agent = Agent(
     name="BacktestAgent",
     port=8002,
     seed="backtest_agent_secret_phrase",
-    mailbox=True,
     endpoint=["http://127.0.0.1:8002/submit"],
 )
 
 # DataAgent address (from the DataAgent when it starts)
-DATA_AGENT_ADDRESS = "test-agent://agent1q2kxet3vh0scsf0sm7y2erzz33cve6tv5uk63x64upw5g68kr0chkv7hw50"
+DATA_AGENT_ADDRESS = "agent1qd9fx6rgeu4u37gafa3s4vu3fmq9pux3e94tzt2ghzr8vx86muttvkqf6re"
 
 
 class SolidityBacktester:

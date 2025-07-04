@@ -6,19 +6,25 @@ import asyncio
 import argparse
 from data_agent import data_agent
 from backtest_agent import backtest_agent, BacktestRequest
+from chat_agent import chat_agent
 from uagents import Context
 
 
 async def run_agents():
-    """Run both agents concurrently"""
+    """Run all agents concurrently"""
     print("Starting UniV4 Backtesting Agents...")
     print(f"DataAgent will run on: http://127.0.0.1:8001")
     print(f"BacktestAgent will run on: http://127.0.0.1:8002")
+    print(f"ChatAgent will run on: http://127.0.0.1:8003")
+    print("\n🤖 Chat Interface Available!")
+    print("You can interact with the system using natural language commands.")
+    print("Example: 'backtest USDC-ETH for 1 week'")
     
-    # Create tasks for both agents
+    # Create tasks for all agents
     tasks = [
         asyncio.create_task(data_agent.run_async()),
-        asyncio.create_task(backtest_agent.run_async())
+        asyncio.create_task(backtest_agent.run_async()),
+        asyncio.create_task(chat_agent.run_async())
     ]
     
     try:
