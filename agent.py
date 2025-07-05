@@ -8,7 +8,11 @@ from uagents_core.models import ErrorMessage
 from chat_proto import chat_proto, struct_output_client_proto
 from backtest_service import run_backtest, BacktestRequest, BacktestResponse
 
-agent = Agent()
+agent = Agent(
+    name="backtest_agent",
+    seed="backtest_agent_unique_seed_phrase_2024",
+    mailbox=True  # Enable for Agentverse integration
+)
 
 proto = QuotaProtocol(
     storage_reference=agent.storage,
@@ -29,6 +33,16 @@ async def handle_request(ctx: Context, sender: str, msg: BacktestRequest):
     except Exception as err:
         ctx.logger.error(err)
         await ctx.send(sender, ErrorMessage(error=str(err)))
+
+# ALWAYS include startup/shutdown handlers
+@agent.on_event("startup")
+async def startup(ctx: Context):
+    ctx.logger.info(f"Agent {agent.name} started: {agent.address}")
+    ctx.logger.info("Backtest agent with mailbox functionality is ready")
+
+@agent.on_event("shutdown")
+async def shutdown(ctx: Context):
+    ctx.logger.info("Cleaning up resources...")
 
 agent.include(proto, publish_manifest=True)
 
