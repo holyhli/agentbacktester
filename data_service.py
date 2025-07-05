@@ -1,12 +1,11 @@
 import requests
-import json
 import re
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from enum import Enum
 
 # Data Service Configuration
-SUBGRAPH_ID = "FqsRcH1XqSjqVx9GRTvEJe959aCbKrcyGgDWBrUkG24g"
+SUBGRAPH_ID = "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
 API_KEY = "bfb3f65c79e8d0f6e7dd728b91d46600"
 GRAPH_URL = f"https://gateway.thegraph.com/api/{API_KEY}/subgraphs/id/{SUBGRAPH_ID}"
 
@@ -21,7 +20,7 @@ class PoolEvent:
                  eventType: EventType, unixTimestamp: int,
                  tickLower: Optional[int] = None, tickUpper: Optional[int] = None):
         self.amount = amount
-        self.amount0 = amount
+        self.amount0 = amount0
         self.amount1 = amount1
         self.eventType = eventType
         self.unixTimestamp = unixTimestamp
@@ -84,18 +83,23 @@ async def get_top_pool() -> Dict[str, Any]:
     except Exception as e:
         raise Exception(f"Failed to fetch top pool: {str(e)}")
 
-async def fetch_pool_events(pool_id: str, minutes_back: int = 1440, max_events: int = 100) -> Dict[str, Any]:
+async def fetch_pool_events(pool_id: str, minutes_back: int = 1440, max_events: int = 100, start_ts: int = None, end_ts: int = None) -> Dict[str, Any]:
     """Fetch events from The Graph for a specific pool"""
 
-    # Calculate time cutoff
-    now_ts = int(datetime.now(timezone.utc).timestamp())
-    ts_cutoff = now_ts - minutes_back * 60
+    # Use specific timestamps if provided, otherwise calculate from minutes_back
+    if start_ts is not None and end_ts is not None:
+        ts_cutoff = start_ts
+        now_ts = end_ts
+    else:
+        # Calculate time cutoff
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        ts_cutoff = now_ts - minutes_back * 60
 
     # GraphQL query for events
     query_events = f"""
     {{
       swaps(first: {max_events}, orderBy: timestamp, orderDirection: desc, where: {{
-        pool: "{pool_id}", timestamp_gt: {ts_cutoff}
+        pool: "{pool_id}", timestamp_gte: {ts_cutoff}, timestamp_lte: {now_ts}
       }}) {{
         id
         amount0
@@ -106,7 +110,7 @@ async def fetch_pool_events(pool_id: str, minutes_back: int = 1440, max_events: 
         timestamp
       }}
       mints(first: {max_events}, orderBy: timestamp, orderDirection: desc, where: {{
-        pool: "{pool_id}", timestamp_gt: {ts_cutoff}
+        pool: "{pool_id}", timestamp_gte: {ts_cutoff}, timestamp_lte: {now_ts}
       }}) {{
         id
         amount
@@ -119,7 +123,7 @@ async def fetch_pool_events(pool_id: str, minutes_back: int = 1440, max_events: 
         timestamp
       }}
       burns(first: {max_events}, orderBy: timestamp, orderDirection: desc, where: {{
-        pool: "{pool_id}", timestamp_gt: {ts_cutoff}
+        pool: "{pool_id}", timestamp_gte: {ts_cutoff}, timestamp_lte: {now_ts}
       }}) {{
         id
         amount

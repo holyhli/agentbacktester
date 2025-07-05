@@ -1,13 +1,5 @@
 from __future__ import annotations
 
-"""chat_proto.py – Enhanced Backtest Agent
-
-This version fixes the buggy relative‑date handling so that phrases like
-"backtest usdc/weth for the last 3 days with my 30 ETH" are parsed locally
-without involving the LLM.  Any request of the form «last N day(s) / week(s)
-/ month(s)» is now mapped to the correct Unix‑epoch start/end timestamps.
-"""
-
 import re
 from collections import deque
 from datetime import datetime, timezone
@@ -31,10 +23,6 @@ from backtest_service import (
     get_default_time_period,
 )
 from data_service import is_data_request, handle_data_request
-
-# -----------------------------------------------------------------------------
-# configuration – address of the LLM structured‑output helper
-# -----------------------------------------------------------------------------
 
 AI_AGENT_ADDRESS = (
     "agent1q0h70caed8ax769shpemapzkyk65uscw4xwk6dc4t3emvp5jdcvqs9xs32y"
@@ -66,13 +54,11 @@ class Cmd(Enum):
     DATA = auto()
     UNKNOWN = auto()
 
-
 _SECONDS_PER = {
     "day": 86_400,
     "week": 604_800,
     "month": 2_592_000,  # 30 days – good enough for back‑testing buckets
 }
-
 
 class CommandParser:
     """Tiny NLP‑lite parser able to understand a handful of meta commands.
@@ -132,6 +118,8 @@ class CommandParser:
 
         # common symbolic names
         t = t.lower()
+        if any(pair in t for pair in ("usdc/usdt", "usdc-usdt", "usdt/usdc", "usdt-usdc")):
+            return "usdc-usdt"
         if any(pair in t for pair in ("usdc/weth", "usdc-weth", "usdc/eth", "usdc-eth")):
             return "usdc-eth"
         if any(pair in t for pair in ("wbtc/eth", "wbtc-weth", "wbtc/eth", "wbtc-weth")):
