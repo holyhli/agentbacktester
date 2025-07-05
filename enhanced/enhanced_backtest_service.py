@@ -5,8 +5,12 @@ import math
 from typing import Dict, Any, List, Optional
 from datetime import datetime, UTC
 import numpy as np
+from decimal import Decimal, getcontext
 
 from uagents import Model, Field
+
+# Set high precision for decimal calculations
+getcontext().prec = 50
 
 from data_storage import BacktestDataManager
 from data_service import fetch_pool_events, get_top_pool, EventType
@@ -27,17 +31,21 @@ class PoolEvent(Model):
 
 class BacktestRequest(Model):
     pool: str = Field(
-        description="Uniswap V4 pool address to backtest (e.g., 0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640 for USDC-ETH)",
+        description="Uniswap V4 pool address to backtest (e.g., 0x55caabb0d2b704fd0ef8192a7e35d8837e678207 for USDC-WETH or usdc-eth for symbolic name)",
     )
     start: int = Field(
-        description="Start timestamp (Unix timestamp, e.g., 1620158974)",
+        description="Start timestamp (Unix timestamp, e.g., 1720137600 for July 2024). For 'last 3 days' use current timestamp minus 3*24*3600",
     )
     end: int = Field(
-        description="End timestamp (Unix timestamp, e.g., 1620243233)",
+        description="End timestamp (Unix timestamp, e.g., 1720224000 for July 2024). Usually current timestamp for 'until now'",
     )
     strategy_params: Dict[str, Any] = Field(
         default={},
         description="Optional strategy parameters for the backtest",
+    )
+    position_size: float = Field(
+        default=1.0,
+        description="Position size in ETH (e.g., 30.0 for '30 ETH', 5.0 for '5 ETH')",
     )
 
 class BacktestResponse(Model):
@@ -153,10 +161,11 @@ async def fetch_real_pool_data(pool_address: str, start: int, end: int) -> List[
                 timestamp = current_time - (24 * 60 * 60)  # Set to 24 hours ago
             
             # Convert to the format expected by the backtest simulation
+            # Use full precision decimal conversion - no rounding to int
             converted_event = {
-                "amount": int(abs(event.amount) * 1000),  # Convert to integer, ensure positive
-                "amount0": int(abs(event.amount0) * 1000000) if event.amount0 else 0,  # Scale for precision
-                "amount1": int(abs(event.amount1) * 1000000) if event.amount1 else 0,  # Scale for precision
+                "amount": float(abs(event.amount)),  # Keep raw amount (USD value)
+                "amount0": float(scale_amount(abs(event.amount0) if event.amount0 else 0, 6)),  # USDC: scale by 10^6
+                "amount1": float(scale_amount(abs(event.amount1) if event.amount1 else 0, 18)),  # ETH: scale by 10^18
                 "eventType": int(event.eventType.value),  # Convert enum to int
                 "tickLower": event.tickLower if event.tickLower else 0,
                 "tickUpper": event.tickUpper if event.tickUpper else 0,
@@ -172,16 +181,18 @@ async def fetch_real_pool_data(pool_address: str, start: int, end: int) -> List[
             ]
             if filtered_events:
                 logger.info(f"Filtered to {len(filtered_events)} events in time range {start_ts} to {end_ts}")
-                return filtered_events
+                events_to_use = filtered_events
             else:
                 logger.info(f"No events found in time range {start_ts} to {end_ts}, using all {len(converted_events)} events")
+                events_to_use = converted_events
+        else:
+            logger.info(f"Using all {len(converted_events)} real events (no additional time filtering)")
+            events_to_use = converted_events
         
-        logger.info(f"Using all {len(converted_events)} real events (no additional time filtering)")
+        # Save consolidated run data (one file with everything)
+        await save_consolidated_run_data(pool_address, events, events_to_use, start_ts, end_ts)
         
-        # Save the raw and converted data for debugging
-        await save_debug_data(pool_address, events, converted_events, start_ts, end_ts)
-        
-        return converted_events
+        return events_to_use
         
     except Exception as e:
         logger.error(f"Error fetching real pool data: {e}")
@@ -243,6 +254,191 @@ async def save_debug_data(pool_address: str, raw_events: List, converted_events:
         
     except Exception as e:
         logger.error(f"Failed to save debug data: {e}")
+
+async def save_consolidated_run_data(pool_address: str, raw_events: List, converted_events: List[Dict], start_ts: int, end_ts: int):
+    """Save consolidated run data with raw events and converted events in one file"""
+    try:
+        # Create results directory
+        results_dir = os.path.join(os.path.dirname(__file__), "results")
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Create timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pool_short = pool_address[:10] if pool_address else "unknown"
+        
+        # Prepare consolidated data
+        run_data = {
+            "metadata": {
+                "pool_address": pool_address,
+                "run_timestamp": timestamp,
+                "time_range": {
+                    "start_timestamp": start_ts,
+                    "end_timestamp": end_ts,
+                    "start_formatted": datetime.fromtimestamp(start_ts).strftime('%Y-%m-%d %H:%M UTC'),
+                    "end_formatted": datetime.fromtimestamp(end_ts).strftime('%Y-%m-%d %H:%M UTC')
+                },
+                "source": "The Graph Protocol",
+                "precision": "Full decimal precision maintained"
+            },
+            "raw_events": {
+                "count": len(raw_events),
+                "description": "Unprocessed events from The Graph",
+                "events": [
+                    {
+                        "amount": event.amount,
+                        "amount0": event.amount0,
+                        "amount1": event.amount1,
+                        "eventType": event.eventType.value,
+                        "unixTimestamp": event.unixTimestamp,
+                        "tickLower": event.tickLower,
+                        "tickUpper": event.tickUpper
+                    } for event in raw_events
+                ]
+            },
+            "converted_events": {
+                "count": len(converted_events),
+                "description": "Human-readable events with proper decimal scaling",
+                "events": converted_events
+            },
+            "statistics": {
+                "swaps": len([e for e in converted_events if e["eventType"] == 1]),
+                "liquidity_events": len([e for e in converted_events if e["eventType"] == 0]),
+                "conversion_info": {
+                    "usdc_decimals": 6,
+                    "eth_decimals": 18,
+                    "precision_method": "Decimal with 50-digit precision"
+                }
+            }
+        }
+        
+        # Save consolidated file
+        filename = f"run_{pool_short}_{timestamp}.json"
+        filepath = os.path.join(results_dir, filename)
+        
+        with open(filepath, 'w') as f:
+            json.dump(run_data, f, indent=2)
+        
+        logger.info(f"💾 Consolidated run data saved to results/{filename}")
+        
+        # Also save a simple events array for easy pandas loading
+        events_only_file = os.path.join(results_dir, f"events_{pool_short}_{timestamp}.json")
+        with open(events_only_file, 'w') as f:
+            json.dump(converted_events, f, indent=2)
+        
+        logger.info(f"📊 Events array saved to results/events_{pool_short}_{timestamp}.json")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to save consolidated run data: {e}")
+
+async def save_onchain_data_backtest(pool_address: str, raw_events: List, converted_events: List[Dict], start_ts: int, end_ts: int):
+    """Save onchain data from backtest to onchainData folder"""
+    try:
+        # Create onchainData directory
+        onchain_dir = os.path.join(os.path.dirname(__file__), "onchainData")
+        os.makedirs(onchain_dir, exist_ok=True)
+        
+        # Create timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pool_short = pool_address[:10] if pool_address else "unknown"
+        
+        # Prepare onchain data
+        onchain_data = {
+            "request": {
+                "type": "backtest_data_fetch",
+                "timestamp": timestamp,
+                "pool_address": pool_address,
+                "time_range": {
+                    "start_timestamp": start_ts,
+                    "end_timestamp": end_ts,
+                    "start_formatted": datetime.fromtimestamp(start_ts).strftime('%Y-%m-%d %H:%M UTC'),
+                    "end_formatted": datetime.fromtimestamp(end_ts).strftime('%Y-%m-%d %H:%M UTC')
+                }
+            },
+            "response": {
+                "raw_events_count": len(raw_events),
+                "converted_events_count": len(converted_events),
+                "swaps": len([e for e in converted_events if e["eventType"] == 1]),
+                "liquidity_events": len([e for e in converted_events if e["eventType"] == 0]),
+                "events": converted_events
+            }
+        }
+        
+        # Save to file
+        filename = f"backtest_data_{pool_short}_{timestamp}.json"
+        filepath = os.path.join(onchain_dir, filename)
+        
+        with open(filepath, 'w') as f:
+            json.dump(onchain_data, f, indent=2)
+        
+        logger.info(f"💾 Saved backtest onchain data to onchainData/{filename}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to save backtest onchain data: {e}")
+
+async def save_events_json(pool_address: str, events: List[Dict[str, Any]]):
+    """Save events in the exact format as the original Python script"""
+    try:
+        # Create events data directory
+        events_dir = os.path.join(os.path.dirname(__file__), "backtest_data")
+        os.makedirs(events_dir, exist_ok=True)
+        
+        # Create timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pool_short = pool_address[:10] if pool_address else "unknown"
+        
+        # Prepare events in original script format
+        events_data = {
+            "metadata": {
+                "pool_address": pool_address,
+                "fetch_timestamp": timestamp,
+                "total_events": len(events),
+                "time_range": {
+                    "description": "Real timeframe from backtest request",
+                    "start_timestamp": events[0]["unixTimestamp"] if events else 0,
+                    "end_timestamp": events[-1]["unixTimestamp"] if events else 0,
+                    "start_formatted": datetime.fromtimestamp(events[0]["unixTimestamp"]).strftime('%Y-%m-%d %H:%M UTC') if events else "N/A",
+                    "end_formatted": datetime.fromtimestamp(events[-1]["unixTimestamp"]).strftime('%Y-%m-%d %H:%M UTC') if events else "N/A"
+                },
+                "source": "The Graph Protocol"
+            },
+            "events": events
+        }
+        
+        # Save to multiple locations for convenience
+        
+        # 1. Save with timestamp (for history)
+        timestamped_file = os.path.join(events_dir, f"events_{pool_short}_{timestamp}.json")
+        with open(timestamped_file, 'w') as f:
+            json.dump(events_data, f, indent=2)
+        
+        # 2. Save as latest (overwrite previous)
+        latest_file = os.path.join(events_dir, f"latest_events_{pool_short}.json")
+        with open(latest_file, 'w') as f:
+            json.dump(events_data, f, indent=2)
+        
+        # 3. Save as generic events.json (like original script output)
+        generic_file = os.path.join(events_dir, "events.json")
+        with open(generic_file, 'w') as f:
+            json.dump(events_data, f, indent=2)
+        
+        # 4. Save just the events array (for direct compatibility)
+        events_only_file = os.path.join(events_dir, "events_array.json")
+        with open(events_only_file, 'w') as f:
+            json.dump(events, f, indent=2)
+        
+        logger.info(f"📄 Events saved to {events_dir}:")
+        logger.info(f"   📄 Timestamped: {os.path.basename(timestamped_file)}")
+        logger.info(f"   📄 Latest: {os.path.basename(latest_file)}")
+        logger.info(f"   📄 Generic: {os.path.basename(generic_file)}")
+        logger.info(f"   📄 Array only: {os.path.basename(events_only_file)}")
+        
+        # Log first few events to show the format
+        logger.info(f"📊 Sample events (first 3):")
+        for i, event in enumerate(events[:3]):
+            logger.info(f"   {i+1}. Type: {event['eventType']}, Amount: {event['amount']}, Timestamp: {event['unixTimestamp']}")
+        
+    except Exception as e:
+        logger.error(f"Failed to save events JSON: {e}")
 
 async def get_real_pool_address(pool: str) -> str:
     """Get real pool address, either from known pools or by auto-selecting top pool"""
@@ -384,8 +580,15 @@ POOL_TOKENS = {
 
 TOKEN_DECIMALS = {"ETH": 18, "WETH": 18, "USDC": 6, "WBTC": 8}
 
+def scale_amount(raw_amount, decimals: int) -> Decimal:
+    """Convert raw on-chain amount to human-readable units with full precision"""
+    if raw_amount == 0:
+        return Decimal('0')
+    return (Decimal(str(raw_amount)) / (Decimal('10') ** decimals)).normalize()
+
 def to_units(amount: int, symbol: str) -> float:
-    return amount / 10 ** TOKEN_DECIMALS[symbol]
+    """Legacy function - use scale_amount for new code"""
+    return float(scale_amount(amount, TOKEN_DECIMALS[symbol]))
 
 async def simulate_advanced_backtest(pool: str, events: list, p):
     fee_tier     = p.get("fee_tier", 0.003)
@@ -413,18 +616,36 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
     vol0 = vol1 = 0
     prices, ts  = [], []
     for i, s in enumerate(swap_ev):
-        a0 = to_units(s["amount0"], sym0)
-        a1 = to_units(s["amount1"], sym1)
+        # Amounts are already converted to human-readable units
+        a0 = s["amount0"]  # USDC in units (e.g., 10611.037)
+        a1 = s["amount1"]  # ETH in units (e.g., 0.004554)
         vol0 += abs(a0)
         vol1 += abs(a1)
-        if a0 != 0:
+        
+        # Log amounts for debugging
+        if i < 3:
+            logger.info(f"   📊 Swap {i+1}: amount0={a0:.6f} {sym0}, amount1={a1:.6f} {sym1}")
+        
+        # Use tolerance for "effectively zero" amounts
+        MIN_AMOUNT_TOLERANCE = 1e-18
+        if abs(a0) > MIN_AMOUNT_TOLERANCE and abs(a1) > MIN_AMOUNT_TOLERANCE:
             price = abs(a1)/abs(a0)
             prices.append(price)
             ts.append(s["unixTimestamp"])
             
             # Log first few swap events for debugging
             if i < 3:
-                logger.info(f"   📊 Swap {i+1}: amount0={a0:.6f} {sym0}, amount1={a1:.6f} {sym1}, price={price:.2f}")
+                logger.info(f"   💹 Price {i+1}: {price:.6f} {sym1}/{sym0}")
+        elif i < 3:
+            logger.info(f"   ⚠️ Skipping swap {i+1}: amounts too small (a0={a0:.10f}, a1={a1:.10f})")
+            
+    # Sanity check for prices
+    if not prices:
+        logger.warning("⚠️ WARNING: No valid prices calculated from swaps!")
+    elif all(p == 0 for p in prices):
+        logger.warning("⚠️ WARNING: All calculated prices are zero!")
+    else:
+        logger.info(f"✅ Valid price calculation: {len(prices)} prices, range {min(prices):.6f} to {max(prices):.6f}")
 
     logger.info(f"   📊 Total volume: {vol0:.3f} {sym0}, {vol1:.3f} {sym1}")
     logger.info(f"   💹 Price range: {min(prices):.2f} to {max(prices):.2f} (from {len(prices)} swaps)")
@@ -434,7 +655,7 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
     last_price = prices[-1] if prices else 0
     logger.info(f"   💵 Last price: {last_price:.2f} {sym1}/{sym0}")
     
-    liq_notional = sum(to_units(e["amount0"], sym0) * last_price for e in liq_ev)
+    liq_notional = sum(e["amount0"] * last_price for e in liq_ev)  # amount0 already converted
     logger.info(f"   💧 Total liquidity notional: {liq_notional:.6f} ETH")
     
     my_notional  = pos_size_eth
@@ -442,6 +663,14 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
     
     share = my_notional / (liq_notional + my_notional) if liq_notional else 0
     logger.info(f"   🥧 My share of pool: {share:.6f} ({share*100:.3f}%)")
+    
+    # Sanity check for position share
+    if share > 1.0:
+        logger.warning(f"⚠️ WARNING: Position share > 100% ({share*100:.1f}%) - likely pool notional calculation error!")
+    elif share > 0.5:
+        logger.warning(f"⚠️ WARNING: Position share > 50% ({share*100:.1f}%) - unusually large for a real pool!")
+    elif liq_notional == 0:
+        logger.warning("⚠️ WARNING: Pool liquidity notional is zero - using default share calculation!")
     
     fee_rev_eth = vol1 * fee_tier * share
     logger.info(f"   💸 Fee revenue: {vol1:.3f} × {fee_tier} × {share:.6f} = {fee_rev_eth:.6f} ETH")
@@ -543,7 +772,7 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
         }
     }
     
-    await save_calculation_debug(pool, calculation_results)
+    await save_calculation_results(pool, calculation_results)
 
     return {
         "pnl": round(pnl, 6),
@@ -558,23 +787,23 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
         "volume_token1": round(vol1, 3)
     }
 
-async def save_calculation_debug(pool: str, calculation_results: Dict[str, Any]):
-    """Save detailed calculation results for debugging"""
+async def save_calculation_results(pool: str, calculation_results: Dict[str, Any]):
+    """Save calculation results to the results directory"""
     try:
-        debug_dir = os.path.join(os.path.dirname(__file__), "debug_data")
-        os.makedirs(debug_dir, exist_ok=True)
+        results_dir = os.path.join(os.path.dirname(__file__), "results")
+        os.makedirs(results_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         pool_short = pool[:10] if pool.startswith("0x") else pool
         
-        calc_file = os.path.join(debug_dir, f"calculations_{pool_short}_{timestamp}.json")
+        calc_file = os.path.join(results_dir, f"calculations_{pool_short}_{timestamp}.json")
         with open(calc_file, 'w') as f:
             json.dump(calculation_results, f, indent=2)
         
-        logger.info(f"💾 Calculation debug saved: {os.path.basename(calc_file)}")
+        logger.info(f"💾 Calculation results saved: {os.path.basename(calc_file)}")
         
     except Exception as e:
-        logger.error(f"Failed to save calculation debug: {e}")
+        logger.error(f"Failed to save calculation results: {e}")
 
 # Function calling interface for LLM integration
 async def backtest_function_call(
