@@ -206,6 +206,15 @@ class BacktestDataManager:
         filename = f"{agent_name}_activity.log"
         return self.storage.append_to_log(filename, activity)
     
+    def store_backtest_results(self, result_data: Dict[str, Any]) -> bool:
+        """Store backtest results (alias for save_backtest_result)"""
+        return self.save_backtest_result(
+            result_data['pool_address'],
+            result_data['start_time'],
+            result_data['end_time'],
+            result_data['results']
+        )
+    
     def get_all_backtest_results(self) -> List[Dict[str, Any]]:
         """Get all backtest results"""
         files = self.storage.list_files()
