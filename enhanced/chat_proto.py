@@ -19,12 +19,13 @@ from uagents_core.contrib.protocols.chat import (
 )
 
 from enhanced_backtest_service import run_backtest, BacktestRequest
+from data_service import is_data_request, handle_data_request, test_graph_connection
 
 # -----------------------------------------------------------------------------
 # configuration
 # -----------------------------------------------------------------------------
 # AI Agent Address for structured output processing
-AI_AGENT_ADDRESS = "agent1qvk7q2av3e2y5gf5s90nfzkc8a48q3wdqeevwrtgqfdl0k78rspd6f2l4dx"
+AI_AGENT_ADDRESS = "agent1q0h70caed8ax769shpemapzkyk65uscw4xwk6dc4t3emvp5jdcvqs9xs32y"
 if not AI_AGENT_ADDRESS:
     raise ValueError("AI_AGENT_ADDRESS not set")
 
@@ -51,6 +52,7 @@ class Cmd(Enum):
     STATUS = auto()
     RESULTS = auto()
     BACKTEST = auto()
+    DATA = auto()
     UNKNOWN = auto()
 
 
@@ -85,6 +87,8 @@ class CommandParser:
             pool = self._extract_pool(t)
             start, end = self._extract_period(t)
             return Cmd.BACKTEST, {"pool": pool, "start": start, "end": end}
+        if is_data_request(text):
+            return Cmd.DATA, {"query": text}
         return Cmd.UNKNOWN, {}
 
     def remember(self, entry: Dict[str, Any]) -> None:
@@ -95,8 +99,19 @@ class CommandParser:
 
     # --------------------------------------------------------------- internal
     def _extract_pool(self, t: str) -> str | None:
+        # First check for explicit address
         m = self._POOL_REGEX.search(t)
-        return m.group(0) if m else None
+        if m:
+            return m.group(0)
+        
+        # Then check for common pool names
+        t_lower = t.lower()
+        if any(pair in t_lower for pair in ["usdc/weth", "usdc-weth", "usdc/eth", "usdc-eth"]):
+            return "usdc-eth"  # Will be resolved to active pool address
+        elif any(pair in t_lower for pair in ["wbtc/eth", "wbtc-eth", "wbtc/weth", "wbtc-weth"]):
+            return "wbtc-eth"
+        
+        return None
 
     def _extract_period(self, t: str) -> Tuple[int, int]:
         now = int(datetime.utcnow().timestamp())
@@ -113,12 +128,21 @@ class CommandParser:
 # canned texts
 # -----------------------------------------------------------------------------
 
-HELP_TEXT = """🤖 **Backtest Agent – Commands**
+HELP_TEXT = """🤖 **Enhanced Backtest Agent – Commands**
 
+💰 **Backtesting**:
 • `backtest 0x… for 1 week` – run a backtest  
 • `status` – system health  
 • `results` – summary of the latest run  
-• `help` – this help
+
+📊 **Data Fetching**:
+• `get pool events from last 24 hours` – fetch recent events
+• `show me swap data from past week` – weekly swap data
+• `fetch 200 events from last 3 days` – custom timeframe
+• `get recent liquidity events` – liquidity data
+
+🔧 **General**:
+• `help` – show this help
 
 Pools may be Uniswap addresses (0x…) or symbolic names (e.g. `USDC-ETH`).  
 Time periods accept “1 day / week / month” or “last 10 days”, etc.
@@ -129,6 +153,7 @@ STATUS_TEXT = """📊 **Status**
 ✅ Chat gateway online  
 ✅ Structured‑output LLM agent reachable  
 ✅ Backtest service up
+✅ The Graph data connection ready
 """
 
 
@@ -210,6 +235,60 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
             continue
         if cmd is Cmd.RESULTS:
             await ctx.send(sender, create_text_chat(_format_results(parser.latest())))
+            continue
+
+        if cmd is Cmd.DATA:
+            # Handle data request directly
+            ctx.logger.info(f"Handling data request: {info['query']}")
+            try:
+                response = await handle_data_request(info['query'])
+                await ctx.send(sender, create_text_chat(response))
+            except Exception as e:
+                error_msg = f"❌ **Error processing data request**: {str(e)}"
+                await ctx.send(sender, create_text_chat(error_msg))
+            continue
+        
+        if cmd is Cmd.BACKTEST:
+            # Handle backtest request directly to avoid LLM agent rate limit
+            ctx.logger.info(f"Handling backtest request directly: pool={info.get('pool')}, start={info.get('start')}, end={info.get('end')}")
+            try:
+                pool = info.get('pool') or "usdc-eth"  # Default to USDC/ETH
+                start = info.get('start')
+                end = info.get('end')
+                
+                # If no time range specified, use default
+                if not start or not end:
+                    from enhanced_backtest_service import get_default_time_period
+                    start, end = get_default_time_period()
+                
+                # Run backtest
+                result = await run_backtest(pool, start, end, {"position_size": 1.0})
+                
+                if result.get("success"):
+                    response = f"✅ **Backtest Complete!**\n\n"
+                    response += f"📊 **Pool**: {pool}\n"
+                    response += f"💰 **PnL**: {result.get('pnl', 0):.4f}\n"
+                    response += f"📈 **Sharpe Ratio**: {result.get('sharpe', 0):.2f}\n"
+                    response += f"💸 **Total Fees**: {result.get('total_fees', 0):.4f}\n"
+                    response += f"🔄 **Total Events**: {result.get('total_events', 0)}\n"
+                    response += f"📊 **Swap Events**: {result.get('swap_events', 0)}\n"
+                    response += f"💧 **Liquidity Events**: {result.get('liquidity_events', 0)}\n"
+                else:
+                    response = f"❌ **Backtest Failed**: {result.get('error_message', 'Unknown error')}"
+                
+                await ctx.send(sender, create_text_chat(response))
+                
+                # Remember the result
+                parser.remember({
+                    "pool": pool,
+                    "start": start,
+                    "end": end,
+                    "results": result
+                })
+                
+            except Exception as e:
+                error_msg = f"❌ **Error running backtest**: {str(e)}"
+                await ctx.send(sender, create_text_chat(error_msg))
             continue
 
         # fallback: forward to the LLM agent for structured‑output parsing
