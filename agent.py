@@ -6,7 +6,7 @@ from uagents.experimental.quota import QuotaProtocol, RateLimit
 from uagents_core.models import ErrorMessage
 
 from chat_proto import chat_proto, struct_output_client_proto
-from enhanced_backtest_service import (
+from backtest_service import (
     run_backtest,
     BacktestRequest,
     BacktestResponse,

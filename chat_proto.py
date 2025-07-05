@@ -25,7 +25,7 @@ from uagents_core.contrib.protocols.chat import (
     chat_protocol_spec,
 )
 
-from enhanced_backtest_service import (
+from backtest_service import (
     run_backtest,
     BacktestRequest,
     get_default_time_period,

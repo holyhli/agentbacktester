@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 
 # Import the enhanced backtest service for direct testing
-from enhanced_backtest_service import (
+from backtest_service import (
     backtest_function_call,
     get_available_functions,
     load_mock_data,
@@ -280,7 +280,7 @@ async def main():
 
     if not rest_success:
         print("\n💡 To test REST API functionality:")
-        print("   1. Run: python enhanced_agent.py")
+        print("   1. Run: python agent.py")
         print("   2. Wait for agent to start")
         print("   3. Run this demo again")
 
