@@ -153,7 +153,17 @@ class CommandParser:
 
     def _extract_position_size(self, t: str) -> float:
         """Look for patterns like "30 eth", "my 5 ETH", "with 2.5 eth"."""
-        if m := re.search(r"(?:my|with)?\s*(\d+\.?\d*)\s*eth", t):
+        # Look for USD/USDC amounts first
+        if m := re.search(r"(?:my|with|for)?\s*(\d+\.?\d*)\s*(?:usd|usdc|usdt)", t.lower()):
+            try:
+                usd_amount = float(m.group(1))
+                # Convert USD to ETH equivalent (assuming ~$3000/ETH)
+                return usd_amount / 3000.0
+            except ValueError:
+                pass
+        
+        # Look for ETH amounts
+        if m := re.search(r"(?:my|with)?\s*(\d+\.?\d*)\s*eth", t.lower()):
             try:
                 return float(m.group(1))
             except ValueError:

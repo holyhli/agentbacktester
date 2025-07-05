@@ -466,11 +466,24 @@ def filter_events_by_timerange(events: List[Dict[str, Any]], start: int, end: in
         if start <= event.get("unixTimestamp", 0) <= end
     ]
 
-def calculate_price_from_amounts(amount0: int, amount1: int) -> float:
-    """Calculate price from token amounts (token1/token0)"""
+def calculate_price_from_amounts(amount0: int, amount1: int, token0: str = "USDC", token1: str = "ETH") -> float:
+    """Calculate price from token amounts with proper token pair handling"""
     if amount0 == 0:
         return 0.0
-    return abs(amount1) / abs(amount0)
+    
+    # Handle different token pairs correctly
+    if token0 == "USDC" and token1 == "USDT":
+        # USDC/USDT stablecoin pair - return USDC per USDT
+        return abs(amount0) / abs(amount1)
+    elif token0 == "USDT" and token1 == "USDC":
+        # USDT/USDC stablecoin pair - return USDC per USDT (standardized)
+        return abs(amount1) / abs(amount0)
+    elif token1 == "ETH" or token1 == "WETH":
+        # Token/ETH pair - return Token per ETH
+        return abs(amount0) / abs(amount1)
+    else:
+        # Generic pair - return token0 per token1
+        return abs(amount0) / abs(amount1)
 
 def calculate_volatility(prices: List[float]) -> float:
     """Calculate price volatility (standard deviation of returns)"""
@@ -575,6 +588,10 @@ POOL_TOKENS = {
     "usdc-eth":  ("USDC", "ETH"),
     "usdc-usdt": ("USDC", "USDT"),
     "wbtc-eth":  ("WBTC", "ETH"),
+    # Add mappings for actual pool addresses
+    "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640": ("USDC", "ETH"),  # usdc-eth
+    "0x3416cf6c708da44db2624d63ea0aaef7113527c6": ("USDC", "USDT"),  # usdc-usdt
+    "0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35": ("WBTC", "USDC"),  # wbtc-usdc
 }
 
 
@@ -617,9 +634,16 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
     prices, ts  = [], []
     valid_swaps = 0
 
-    # FIXED: Better threshold handling for small amounts
-    MIN_USDC = 0.01  # $0.01 minimum
-    MIN_ETH = 0.000001  # 0.000001 ETH minimum
+    # FIXED: Better threshold handling for small amounts - adjust based on token pair
+    if sym0 == "USDC" and sym1 == "USDT":
+        MIN_TOKEN0 = 0.01  # $0.01 minimum for USDC
+        MIN_TOKEN1 = 0.01  # $0.01 minimum for USDT
+    elif sym1 == "ETH" or sym1 == "WETH":
+        MIN_TOKEN0 = 0.01  # $0.01 minimum for USDC/other tokens
+        MIN_TOKEN1 = 0.000001  # 0.000001 ETH minimum
+    else:
+        MIN_TOKEN0 = 0.01  # Generic minimum for token0
+        MIN_TOKEN1 = 0.01  # Generic minimum for token1
 
     for i, s in enumerate(swap_ev):
         # Amounts are already converted to human-readable units
@@ -631,7 +655,7 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
             logger.info(f"   📊 Swap {i+1}: amount0={a0:.6f} {sym0}, amount1={a1:.6f} {sym1}")
 
         # FIXED: Only skip if BOTH amounts are too small
-        if a0 < MIN_USDC and a1 < MIN_ETH:
+        if a0 < MIN_TOKEN0 and a1 < MIN_TOKEN1:
             if i < 3:
                 logger.info(f"   ⚠️ Skipping swap {i+1}: amounts too small (a0={a0:.10f}, a1={a1:.10f})")
             continue
@@ -641,43 +665,127 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
         vol1 += a1
 
         # FIXED: Calculate price from whichever amount is larger
-        if a0 >= MIN_USDC and a1 >= MIN_ETH:
+        if a0 >= MIN_TOKEN0 and a1 >= MIN_TOKEN1:
             # Both amounts significant - calculate actual price
-            price = a0 / a1  # USDC per ETH (price in USD)
-            prices.append(price)
-            ts.append(s["unixTimestamp"])
-            if i < 3:
-                logger.info(f"   💹 Price from swap {i+1}: {price:.2f} USD/ETH")
-        elif a0 >= MIN_USDC:
-            # Only USDC amount is significant - estimate ETH price
-            estimated_price = 3000.0  # Reasonable ETH price
-            estimated_eth = a0 / estimated_price
-            vol1 += estimated_eth  # Add estimated ETH volume
-            prices.append(estimated_price)
-            ts.append(s["unixTimestamp"])
-            if i < 3:
-                logger.info(f"   💹 Estimated price from USDC-only swap: {estimated_price:.2f} USD/ETH")
-        elif a1 >= MIN_ETH:
-            # Only ETH amount is significant - estimate price
-            estimated_price = 3000.0
-            estimated_usdc = a1 * estimated_price
-            vol0 += estimated_usdc  # Add estimated USDC volume
-            prices.append(estimated_price)
-            ts.append(s["unixTimestamp"])
-            if i < 3:
-                logger.info(f"   💹 Estimated price from ETH-only swap: {estimated_price:.2f} USD/ETH")
+            # Handle different token pairs correctly
+            if sym0 == "USDC" and sym1 == "USDT":
+                # USDC/USDT stablecoin pair - price should be around 1.0
+                price = a0 / a1  # USDC per USDT
+                prices.append(price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Price from swap {i+1}: {price:.4f} {sym0}/{sym1}")
+            elif sym0 == "USDT" and sym1 == "USDC":
+                # USDT/USDC stablecoin pair - price should be around 1.0
+                price = a1 / a0  # USDC per USDT (standardize to USDC base)
+                prices.append(price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Price from swap {i+1}: {price:.4f} USDC/USDT")
+            elif sym1 == "ETH" or sym1 == "WETH":
+                # Token/ETH pair - calculate price in USD per ETH
+                price = a0 / a1  # Token per ETH
+                prices.append(price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Price from swap {i+1}: {price:.2f} {sym0}/{sym1}")
+            else:
+                # Generic token pair - use ratio as-is
+                price = a0 / a1  # token0 per token1
+                prices.append(price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Price from swap {i+1}: {price:.4f} {sym0}/{sym1}")
+        elif a0 >= MIN_TOKEN0:
+            # Only token0 amount is significant - estimate based on token pair
+            if sym0 == "USDC" and sym1 == "USDT":
+                # USDC/USDT stablecoin pair - estimate ~1.0 price
+                estimated_price = 1.0
+                estimated_usdt = a0 / estimated_price
+                vol1 += estimated_usdt  # Add estimated USDT volume
+                prices.append(estimated_price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Estimated price from {sym0}-only swap: {estimated_price:.4f} {sym0}/{sym1}")
+            elif sym1 == "ETH" or sym1 == "WETH":
+                # Token/ETH pair - estimate ETH price
+                estimated_price = 3000.0  # Reasonable ETH price
+                estimated_eth = a0 / estimated_price
+                vol1 += estimated_eth  # Add estimated ETH volume
+                prices.append(estimated_price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Estimated price from {sym0}-only swap: {estimated_price:.2f} {sym0}/{sym1}")
+            else:
+                # Generic pair - use reasonable estimate
+                estimated_price = 1.0
+                estimated_token1 = a0 / estimated_price
+                vol1 += estimated_token1
+                prices.append(estimated_price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Estimated price from {sym0}-only swap: {estimated_price:.4f} {sym0}/{sym1}")
+        elif a1 >= MIN_TOKEN1:
+            # Only token1 amount is significant - estimate based on token pair
+            if sym0 == "USDC" and sym1 == "USDT":
+                # USDC/USDT stablecoin pair - estimate ~1.0 price
+                estimated_price = 1.0
+                estimated_usdc = a1 * estimated_price
+                vol0 += estimated_usdc  # Add estimated USDC volume
+                prices.append(estimated_price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Estimated price from {sym1}-only swap: {estimated_price:.4f} {sym0}/{sym1}")
+            elif sym1 == "ETH" or sym1 == "WETH":
+                # Token/ETH pair - estimate ETH price
+                estimated_price = 3000.0
+                estimated_token0 = a1 * estimated_price
+                vol0 += estimated_token0  # Add estimated token0 volume
+                prices.append(estimated_price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Estimated price from {sym1}-only swap: {estimated_price:.2f} {sym0}/{sym1}")
+            else:
+                # Generic pair - use reasonable estimate
+                estimated_price = 1.0
+                estimated_token0 = a1 * estimated_price
+                vol0 += estimated_token0
+                prices.append(estimated_price)
+                ts.append(s["unixTimestamp"])
+                if i < 3:
+                    logger.info(f"   💹 Estimated price from {sym1}-only swap: {estimated_price:.4f} {sym0}/{sym1}")
 
     # FIXED: Ensure we have reasonable price data
     if not prices:
         logger.warning("⚠️ No valid prices from swaps, using market estimate")
-        prices = [3000.0]  # Default ETH price
-        avg_price = 3000.0
+        if sym0 == "USDC" and sym1 == "USDT":
+            # USDC/USDT stablecoin pair - use ~1.0 price
+            prices = [1.0]
+            avg_price = 1.0
+        elif sym1 == "ETH" or sym1 == "WETH":
+            # Token/ETH pair - use ETH price
+            prices = [3000.0]
+            avg_price = 3000.0
+        else:
+            # Generic pair - use reasonable estimate
+            prices = [1.0]
+            avg_price = 1.0
     else:
         avg_price = sum(prices) / len(prices)
-        logger.info(f"✅ Valid price calculation: {len(prices)} prices, avg {avg_price:.2f} USD/ETH")
+        if sym0 == "USDC" and sym1 == "USDT":
+            logger.info(f"✅ Valid price calculation: {len(prices)} prices, avg {avg_price:.4f} {sym0}/{sym1}")
+        elif sym1 == "ETH" or sym1 == "WETH":
+            logger.info(f"✅ Valid price calculation: {len(prices)} prices, avg {avg_price:.2f} {sym0}/{sym1}")
+        else:
+            logger.info(f"✅ Valid price calculation: {len(prices)} prices, avg {avg_price:.4f} {sym0}/{sym1}")
 
     logger.info(f"   📊 Total volume: {vol0:.3f} {sym0}, {vol1:.3f} {sym1}")
-    logger.info(f"   💹 Average price: {avg_price:.2f} USD/ETH (from {len(prices)} swaps)")
+    if sym0 == "USDC" and sym1 == "USDT":
+        logger.info(f"   💹 Average price: {avg_price:.4f} {sym0}/{sym1} (from {len(prices)} swaps)")
+    elif sym1 == "ETH" or sym1 == "WETH":
+        logger.info(f"   💹 Average price: {avg_price:.2f} {sym0}/{sym1} (from {len(prices)} swaps)")
+    else:
+        logger.info(f"   💹 Average price: {avg_price:.4f} {sym0}/{sym1} (from {len(prices)} swaps)")
 
     # --- FIXED step 2: fee revenue calculation ----------------------------
     logger.info(f"💰 STEP 2: Fee Revenue Calculation")
@@ -700,9 +808,27 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
         total_liquidity_eth = pos_size_eth * 50  # Assume pool is 50x our position
         logger.info(f"   📊 Using estimated total liquidity: {total_liquidity_eth:.6f} ETH")
 
-    logger.info(f"   💵 Average price: {avg_price:.2f} USD/ETH")
-    logger.info(f"   💧 Total liquidity: {total_liquidity_eth:.6f} ETH")
-    logger.info(f"   👤 My position: {pos_size_eth:.6f} ETH")
+    # Display price with appropriate units based on token pair
+    if sym0 == "USDC" and sym1 == "USDT":
+        logger.info(f"   💵 Average price: {avg_price:.2f} {sym0}/{sym1}")
+    elif sym1 == "ETH" or sym1 == "WETH":
+        logger.info(f"   💵 Average price: {avg_price:.2f} USD/ETH")
+    else:
+        logger.info(f"   💵 Average price: {avg_price:.2f} {sym0}/{sym1}")
+    # Display liquidity with appropriate units based on token pair
+    if sym0 == "USDC" and sym1 == "USDT":
+        # For stablecoin pairs, show in USD equivalent
+        total_liquidity_usd = total_liquidity_eth * avg_price
+        logger.info(f"   💧 Total liquidity: {total_liquidity_usd:.6f} USD")
+    else:
+        logger.info(f"   💧 Total liquidity: {total_liquidity_eth:.6f} ETH")
+    # Display position with appropriate units based on token pair
+    if sym0 == "USDC" and sym1 == "USDT":
+        # For stablecoin pairs, show in USD equivalent
+        pos_size_usd = pos_size_eth * avg_price
+        logger.info(f"   👤 My position: {pos_size_usd:.6f} USD")
+    else:
+        logger.info(f"   👤 My position: {pos_size_eth:.6f} ETH")
 
     # Calculate realistic position share (cap at 10%)
     share = min(pos_size_eth / total_liquidity_eth, 0.1)
@@ -715,8 +841,20 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
     total_volume_eth_equiv = vol1 + (vol0 / avg_price)  # Convert all volume to ETH equivalent
     fee_rev_eth = total_volume_eth_equiv * fee_tier * share
 
-    logger.info(f"   💸 Total volume (ETH equiv): {total_volume_eth_equiv:.6f} ETH")
-    logger.info(f"   💸 Fee revenue: {total_volume_eth_equiv:.6f} × {fee_tier} × {share:.6f} = {fee_rev_eth:.6f} ETH")
+    # Display volume with appropriate units based on token pair
+    if sym0 == "USDC" and sym1 == "USDT":
+        # For stablecoin pairs, show in USD equivalent
+        total_volume_usd = total_volume_eth_equiv * avg_price
+        logger.info(f"   💸 Total volume (USD equiv): {total_volume_usd:.6f} USD")
+    else:
+        logger.info(f"   💸 Total volume (ETH equiv): {total_volume_eth_equiv:.6f} ETH")
+    # Display fee revenue with appropriate units based on token pair
+    if sym0 == "USDC" and sym1 == "USDT":
+        # For stablecoin pairs, show in USD equivalent
+        fee_rev_usd = fee_rev_eth * avg_price
+        logger.info(f"   💸 Fee revenue: {total_volume_eth_equiv:.6f} × {fee_tier} × {share:.6f} = {fee_rev_usd:.6f} USD")
+    else:
+        logger.info(f"   💸 Fee revenue: {total_volume_eth_equiv:.6f} × {fee_tier} × {share:.6f} = {fee_rev_eth:.6f} ETH")
 
     # --- step 3: impermanent loss ------------------------------------------
     logger.info(f"📉 STEP 3: Impermanent Loss Calculation")
@@ -732,11 +870,23 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
         logger.info(f"   📐 IL percentage: 2×√{pr:.6f}/(1+{pr:.6f}) - 1 = {il_pct:.6f}")
 
         il = abs(il_pct) * pos_size_eth
-        logger.info(f"   💔 Impermanent loss: {abs(il_pct):.6f} × {pos_size_eth} = {il:.6f} ETH")
+        # Display impermanent loss with appropriate units based on token pair
+        if sym0 == "USDC" and sym1 == "USDT":
+            # For stablecoin pairs, show in USD equivalent
+            il_usd = il * avg_price
+            logger.info(f"   💔 Impermanent loss: {abs(il_pct):.6f} × {pos_size_eth} = {il_usd:.6f} USD")
+        else:
+            logger.info(f"   💔 Impermanent loss: {abs(il_pct):.6f} × {pos_size_eth} = {il:.6f} ETH")
     else:
         # Minimal IL for short periods
         il = 0.001 * pos_size_eth
-        logger.info(f"   ⚠️ Using minimal IL estimate: {il:.6f} ETH")
+        # Display minimal impermanent loss with appropriate units based on token pair
+        if sym0 == "USDC" and sym1 == "USDT":
+            # For stablecoin pairs, show in USD equivalent
+            il_usd = il * avg_price
+            logger.info(f"   ⚠️ Using minimal IL estimate: {il_usd:.6f} USD")
+        else:
+            logger.info(f"   ⚠️ Using minimal IL estimate: {il:.6f} ETH")
 
     # --- step 4: gas --------------------------------------------------------
     logger.info(f"⛽ STEP 4: Gas Costs Calculation")
@@ -747,12 +897,29 @@ async def simulate_advanced_backtest(pool: str, events: list, p):
 
     # --- PnL Calculation ---
     logger.info(f"🏆 STEP 5: Final PnL Calculation")
-    logger.info(f"   💰 Fee revenue: +{fee_rev_eth:.6f} ETH")
-    logger.info(f"   💔 Impermanent loss: -{il:.6f} ETH")
-    logger.info(f"   ⛽ Gas costs: -{gas_costs:.6f} ETH")
+    # Display final PnL breakdown with appropriate units based on token pair
+    if sym0 == "USDC" and sym1 == "USDT":
+        # For stablecoin pairs, show in USD equivalent (except gas costs which stay in ETH)
+        fee_rev_usd = fee_rev_eth * avg_price
+        il_usd = il * avg_price
+        logger.info(f"   💰 Fee revenue: +{fee_rev_usd:.6f} USD")
+        logger.info(f"   💔 Impermanent loss: -{il_usd:.6f} USD")
+        logger.info(f"   ⛽ Gas costs: -{gas_costs:.6f} ETH")
+    else:
+        logger.info(f"   💰 Fee revenue: +{fee_rev_eth:.6f} ETH")
+        logger.info(f"   💔 Impermanent loss: -{il:.6f} ETH")
+        logger.info(f"   ⛽ Gas costs: -{gas_costs:.6f} ETH")
 
     pnl = fee_rev_eth - il - gas_costs
-    logger.info(f"   🎯 PnL: {fee_rev_eth:.6f} - {il:.6f} - {gas_costs:.6f} = {pnl:.6f} ETH")
+    # Display final PnL with appropriate units based on token pair
+    if sym0 == "USDC" and sym1 == "USDT":
+        # For stablecoin pairs, show in USD equivalent (but keep calculation in ETH)
+        pnl_usd = pnl * avg_price
+        fee_rev_usd = fee_rev_eth * avg_price
+        il_usd = il * avg_price
+        logger.info(f"   🎯 PnL: {fee_rev_usd:.6f} - {il_usd:.6f} - {gas_costs * avg_price:.6f} = {pnl_usd:.6f} USD")
+    else:
+        logger.info(f"   🎯 PnL: {fee_rev_eth:.6f} - {il:.6f} - {gas_costs:.6f} = {pnl:.6f} ETH")
 
     # --- step 5: Sharpe -----------------------------------------------------
     logger.info(f"📊 STEP 6: Sharpe Ratio Calculation")
