@@ -1,4 +1,3 @@
-import os
 from enum import Enum
 
 from uagents import Agent, Context, Model
@@ -11,7 +10,7 @@ from backtest_service import run_backtest, BacktestRequest, BacktestResponse
 agent = Agent(
     name="backtest_agent",
     seed="backtest_agent_unique_seed_phrase_2024",
-    mailbox=True  # Enable for Agentverse integration
+    mailbox=True
 )
 
 proto = QuotaProtocol(
