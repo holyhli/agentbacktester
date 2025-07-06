@@ -1,0 +1,8 @@
+alpaca-trade-api
+numpy
+pandas
+requests
+neo4j
+matplotlib
+pytest
+python-dotenv 

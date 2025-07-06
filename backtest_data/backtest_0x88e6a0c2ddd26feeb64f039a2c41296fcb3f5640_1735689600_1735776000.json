@@ -1,0 +1,13 @@
+{
+  "pool_address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+  "start_time": 1735689600,
+  "end_time": 1735776000,
+  "timestamp": "2025-07-05T19:15:35.535657",
+  "results": {
+    "pnl": 0.0,
+    "sharpe": 0,
+    "total_fees": 3.0,
+    "impermanent_loss": 0,
+    "gas_costs": 0.001
+  }
+}
